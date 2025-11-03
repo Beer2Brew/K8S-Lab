@@ -133,6 +133,19 @@ Vagrant.configure("2") do |config|
                 echo -e "$(date '+%F %T') ERROR: Error occured while executing k8s setup ansible-playbook"
             fi
 
+                # At end of provisioning, output the master kubeconfig (raw) for convenience
+                echo -e "$(date '+%F %T') INFO: Master kubeconfig (raw) follow below --START--"
+                if [ -f /home/vagrant/.kube/config ]; then
+                    if command -v kubectl >/dev/null 2>&1; then
+                        sudo kubectl --kubeconfig /home/vagrant/.kube/config config view --raw || sudo /usr/local/bin/kubectl --kubeconfig /home/vagrant/.kube/config config view --raw || sudo cat /home/vagrant/.kube/config
+                    else
+                        sudo cat /home/vagrant/.kube/config
+                    fi
+                else
+                    echo "No kubeconfig found at /home/vagrant/.kube/config"
+                fi
+                echo -e "$(date '+%F %T') INFO: Master kubeconfig --END--"
+
         SHELL
     end
 end
