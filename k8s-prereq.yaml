@@ -8,6 +8,7 @@
 
   vars:
     K8S_VERSION: "1.29"
+    INSTALL_KUBE_BINARIES: true
 
   tasks:
 
@@ -43,14 +44,14 @@
         - gnupg-agent
         - software-properties-common
 
+  - name: "Remove kubernetes apt source if present"
+    file:
+      path: /etc/apt/sources.list.d/kubernetes.list
+      state: absent
+
   - name: "Add an apt signing key for container package"
     apt_key:
       url: https://download.docker.com/linux/ubuntu/gpg
-      state: present
-
-  - name: "Add apt repository for stable version of container package"
-    apt_repository:
-      repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename }} stable
       state: present
 
   - name: "Install containerd service and dependencies"
@@ -65,12 +66,6 @@
         - docker-ce-cli
         - containerd.io
 
-  - name: "containerd configuration setup"
-    copy:
-      src: "{{ item.src }}"
-      dest: "{{ item.dest }}"
-    with_items:
-      - { src: /vagrant/config/containerd/config.toml, dest: /etc/containerd/config.toml }
 
   - name: "Reload systemd daemon"
     command: systemctl daemon-reload
@@ -105,30 +100,16 @@
       path: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
       state: absent
 
-  - name: "Add kubernetes apt repository key"
-    shell: >
-      # Use the official Kubernetes apt repository key
-      curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/kubernetes-archive-keyring.gpg
+  - name: "Check if containerd config exists in /vagrant"
+    stat:
+      path: /vagrant/config/containerd/config.toml
+    register: containerd_config
 
-  - name: "Add kubernetes repository to sources list"
-    apt_repository:
-      repo: deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main
-      state: present
-      filename: kubernetes
-      update_cache: yes
-
-  - name: "Install kubernetes binaries"
-    apt:
-      name:
-        - kubelet
-        - kubeadm
-        - kubectl
-      state: present
-      update_cache: yes
-
-  - name: "Mark hold on k8s binaries"
-    shell:
-      cmd: sudo apt-mark hold kubelet kubeadm kubectl
+  - name: "containerd configuration setup (only if config present)"
+    copy:
+      src: /vagrant/config/containerd/config.toml
+      dest: /etc/containerd/config.toml
+    when: containerd_config.stat.exists
 
   - name: "Configure Node IP"
     lineinfile:
@@ -136,24 +117,84 @@
       line: KUBELET_EXTRA_ARGS=--node-ip={{ ansible_eth1.ipv4.address }}
       create: yes
 
-  - name: "Restart kubelet service"
+  - name: "Check if kubelet binary exists"
+    stat:
+      path: /usr/bin/kubelet
+    register: kubelet_bin
+    ignore_errors: yes
+
+  - name: "Restart kubelet service (only if kubelet installed)"
     service:
       name: kubelet
       state: restarted
       daemon_reload: yes
       enabled: yes
+    when: kubelet_bin.stat.exists
 
-  - name: "Ensure kubectl binary is present (fallback)"
+  - name: "Ensure kubectl (and optionally kubeadm/kubelet) binaries are present (fallback)"
+    become: true
     shell: |
+      set -euo pipefail
+      STABLE=$(curl -L -s https://dl.k8s.io/release/stable.txt)
+      # kubectl
       if [ ! -x /usr/local/bin/kubectl ]; then
-        echo "Downloading kubectl (stable) to /usr/local/bin/kubectl"
-        curl -L -o /usr/local/bin/kubectl https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
+        echo "Downloading kubectl ${STABLE} to /usr/local/bin/kubectl"
+        curl -L -o /usr/local/bin/kubectl https://dl.k8s.io/release/${STABLE}/bin/linux/amd64/kubectl
         chmod +x /usr/local/bin/kubectl
       else
         echo "/usr/local/bin/kubectl already exists"
       fi
+
+      # optional kubeadm & kubelet static binaries (do not register services)
+      if [ "{{ INSTALL_KUBE_BINARIES }}" = true ]; then
+        if [ ! -x /usr/local/bin/kubeadm ]; then
+          echo "Downloading kubeadm ${STABLE} to /usr/local/bin/kubeadm"
+          curl -L -o /usr/local/bin/kubeadm https://dl.k8s.io/release/${STABLE}/bin/linux/amd64/kubeadm
+          chmod +x /usr/local/bin/kubeadm
+        else
+          echo "/usr/local/bin/kubeadm already exists"
+        fi
+
+        if [ ! -x /usr/local/bin/kubelet ]; then
+          echo "Downloading kubelet ${STABLE} to /usr/local/bin/kubelet"
+          curl -L -o /usr/local/bin/kubelet https://dl.k8s.io/release/${STABLE}/bin/linux/amd64/kubelet
+          chmod +x /usr/local/bin/kubelet
+        else
+          echo "/usr/local/bin/kubelet already exists"
+        fi
+      fi
     args:
       executable: /bin/bash
+
+  - name: "Ensure /usr/bin symlinks for kubectl (and optional kubeadm/kubelet)"
+    file:
+      src: /usr/local/bin/kubectl
+      dest: /usr/bin/kubectl
+      state: link
+
+  - name: "Ensure /usr/bin symlink for kubeadm if installed"
+    stat:
+      path: /usr/local/bin/kubeadm
+    register: kubeadm_bin
+
+  - name: "Ensure /usr/bin symlink for kubeadm if installed"
+    file:
+      src: /usr/local/bin/kubeadm
+      dest: /usr/bin/kubeadm
+      state: link
+    when: INSTALL_KUBE_BINARIES | bool and kubeadm_bin.stat.exists
+
+  - name: "Ensure /usr/bin symlink for kubelet if installed"
+    stat:
+      path: /usr/local/bin/kubelet
+    register: kubelet_bin
+
+  - name: "Ensure /usr/bin symlink for kubelet if installed"
+    file:
+      src: /usr/local/bin/kubelet
+      dest: /usr/bin/kubelet
+      state: link
+    when: INSTALL_KUBE_BINARIES | bool and kubelet_bin.stat.exists
 
   - name: "Add vagrant user to docker group"
     user:

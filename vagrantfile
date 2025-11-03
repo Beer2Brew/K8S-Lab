@@ -65,6 +65,9 @@ Vagrant.configure("2") do |config|
 
             sudo timedatectl set-timezone Asia/Kolkata
 
+            # remove any stale kubernetes apt source that may break apt update
+            sudo rm -f /etc/apt/sources.list.d/kubernetes.list || true
+
             echo -e "$(date '+%F %T') INFO: Installing Ansible on master node"
 
             # install ansible
